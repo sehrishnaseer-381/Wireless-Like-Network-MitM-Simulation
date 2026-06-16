@@ -1,0 +1,15 @@
+# Working captures can be huge (iperf3 floods) — regenerate via capture.sh.
+# Curated, small evidence pcaps live in evidence/ and ARE committed.
+captures/
+
+# OS / editor noise
+.DS_Store
+*~
+*.swp
+*.swo
+
+# NS-3 build artifacts (if you add the simulation chapter under ns3/)
+build/
+*.o
+*.pyc
+__pycache__/
