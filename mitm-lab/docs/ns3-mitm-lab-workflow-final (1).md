@@ -68,17 +68,6 @@ sudo apt update
 sudo apt install -y iproute2 iputils-ping net-tools tcpdump wireshark iperf3 iptables bridge-utils
 ```
 
-Recommended additions:
-
-```bash
-sudo apt install -y ethtool nftables python3 python3-pip graphviz gnuplot
-```
-
-For NS-3 work later, also install build tools:
-
-```bash
-sudo apt install -y git g++ python3-dev cmake ninja-build pkg-config ccache sqlite3 libsqlite3-dev libxml2 libxml2-dev libgsl-dev gsl-bin
-```
 
 ## 5. Working Namespace Lab
 
@@ -155,19 +144,19 @@ sudo ip netns exec attacker ip link set lo up
 
 ### 6.4 Enable forwarding
 
-Forwarding (`ip_forward`) is a **per-namespace** setting. It must be enabled *inside the attacker namespace*, not on the host. Setting it on the host has no effect on the attacker's forwarding behavior.
+Forwarding must be enabled **inside the attacker namespace**, not on the host. The `ip_forward` setting is per-namespace, so a plain host-level `sysctl` does nothing for the attacker and the victim will get no replies.
 
 ```bash
 sudo ip netns exec attacker sysctl -w net.ipv4.ip_forward=1
 ```
 
-Verify it is actually on (this must print `= 1`):
+Verify it is actually on:
 
 ```bash
 sudo ip netns exec attacker sysctl net.ipv4.ip_forward
 ```
 
-If this is `0`, the attacker receives packets on `att-v1` but will not forward them to `att-v2`, so Victim1 gets no reply.
+It must print `net.ipv4.ip_forward = 1`. If it prints `0`, the attacker receives packets on `att-v1` but will not forward them to `att-v2`, so victim-to-victim communication fails.
 
 Optional forwarding safety for bridge traffic:
 
@@ -209,66 +198,80 @@ sudo ip netns exec victim1 iperf3 -c 10.0.2.20 -t 10
 
 ### 7.4 Capture traffic on the attacker
 
-`tcpdump` blocks the terminal while it captures, and it only sees packets that pass **while it is running**. So you need **two terminals at once**: start the capture first, then generate traffic from the other terminal.
+`tcpdump` only captures packets that pass **while it is actively running**, and it blocks the terminal it runs in. So the capture and the traffic generator must run **at the same time, in two separate terminals**. Start the capture first, then generate traffic.
 
-**Terminal A** (start first, leave running):
+**Terminal A** — start the capture and leave it running:
 
 ```bash
 sudo ip netns exec attacker tcpdump -i att-v1 -nn icmp
 ```
 
-**Terminal B** (run while A is still capturing):
+**Terminal B** — generate traffic while Terminal A is still listening:
 
 ```bash
 sudo ip netns exec victim1 ping -c 5 10.0.2.20
 ```
 
-Notes that make the output readable:
+### 7.4.1 Quick diagnostics if the attacker sees nothing
 
-- Capture on a **single interface** (`-i att-v1`) rather than `-i any`. With `-i any` every forwarded packet appears **twice** — once `In` on `att-v1` and once `Out` on `att-v2`. That In/Out pair is useful as on-path *evidence*, but it doubles the line count.
-- For ICMP, output is one line per packet and easy to read. For `iperf3`, the flow is a flood (hundreds of thousands of packets), so do not print it to the terminal — capture to a file instead (see 7.5).
-- Add `-c 20` to auto-stop after 20 packets, or filter handshakes only with `'tcp port 5201 and tcp[tcpflags] & (tcp-syn|tcp-fin) != 0'`.
+If no traffic shows up at the attacker, check the path in this order:
 
-If the routing is correct, the attacker sees the packets because it is forwarding them. A reply arriving with `ttl=63` (one less than the usual 64) confirms the packet crossed exactly one router — the attacker.
+Confirm victim1 actually routes through the attacker:
+
+```bash
+sudo ip netns exec victim1 ip route get 10.0.2.20
+```
+
+This should report `via 10.0.1.50 dev v1-att`. If it shows a different next-hop or no `via`, the traffic is bypassing the attacker (often a leftover host route or stale bridge).
+
+Confirm packets are reaching and crossing the attacker by watching interface counters during a continuous ping:
+
+```bash
+sudo ip netns exec attacker tcpdump -i any -nn icmp
+```
 
 ### 7.5 View the traffic in Wireshark
 
-There are two approaches. Saving to a file is the most reliable and gives you a submittable artifact for the appendix.
+There are two approaches: save a `.pcap` file and open it (most reliable, best for the report), or live-capture directly inside the namespace.
 
-**Method 1 — save to a file, then open (recommended for the report).**
+#### Method 1 — Save to a file, then open (recommended)
 
-Capture on the attacker, write to a file:
+Capture to a file from the attacker namespace:
 
 ```bash
 sudo ip netns exec attacker tcpdump -i att-v1 -w ~/icmp-capture.pcap icmp
 ```
 
-Generate traffic from another terminal, then stop the capture with Ctrl+C and open it:
+Generate traffic in another terminal, then stop the capture with Ctrl+C and open it:
 
 ```bash
-sudo chown $USER ~/icmp-capture.pcap   # file is root-owned; fix before opening
 wireshark ~/icmp-capture.pcap
 ```
 
-Do not run `wireshark` itself with `sudo` — running the GUI as root is discouraged and may refuse to launch. Fix the file owner instead. For `iperf3` runs, capture with a filter so the file stays manageable:
+Two things to watch out for:
+
+- The `.pcap` is owned by root because tcpdump ran under sudo. If Wireshark reports a permission error, fix ownership first: `sudo chown $USER ~/icmp-capture.pcap`
+- Do **not** launch the Wireshark GUI with sudo — running the GUI as root is discouraged and may refuse to start. Fix the file owner instead.
+
+For an iperf3 throughput capture, write to a clearly named file per condition:
 
 ```bash
 sudo ip netns exec attacker tcpdump -i att-v1 -w ~/iperf-baseline.pcap 'tcp port 5201'
 ```
 
-**Method 2 — live capture inside the namespace.**
+Writing binary to a file is much faster than printing, so you get almost no kernel drops even during an iperf3 flood. This also gives you a clean, repeatable artifact to submit as evidence for each test condition.
 
-Launch Wireshark inside the attacker namespace so `att-v1` and `att-v2` appear in its interface list:
+#### Method 2 — Live capture directly in Wireshark
+
+Launch Wireshark itself inside the attacker namespace so packets stream in live:
 
 ```bash
 sudo ip netns exec attacker wireshark
 ```
 
-If this throws a display or D-Bus error, preserve the GUI environment:
+Select `att-v1` from the interface list to start capturing, then generate traffic in another terminal. If this throws a D-Bus or display error (common when sudo changes the environment), preserve your display variables:
 
-```bash
-sudo ip netns exec attacker env DISPLAY=$DISPLAY XAUTHORITY=$XAUTHORITY wireshark
-```
+Method 1 is more reliable for screenshots; Method 2 is nicer for a live viva demo if it cooperates.
 
 Useful display filters:
 
@@ -277,15 +280,22 @@ Useful display filters:
 - `arp` for address-resolution traffic
 - `ip.addr == 10.0.1.10 && ip.addr == 10.0.2.20` for victim-to-victim flows
 - `tcp.flags.syn == 1` for connection setups only (skips the data flood)
+- `tcp` or `udp` for protocol-specific inspection
 
 Useful views:
 
 - Packet List pane: who sent the packet and when
-- Packet Details pane: expand the IP header to show **TTL = 63** on forwarded replies — this is your visual on-path evidence
+- Packet Details pane: headers, flags, TTL, sequence numbers
 - Packet Bytes pane: raw payload
-- **Statistics → Conversations → IPv4**: per-flow packet/byte counts, useful for the results tables
 
-For reliability in a lab report, saved `.pcap` files are easier to repeat and easier to submit as evidence.
+#### What to point at in the report
+
+Two things in Wireshark visually prove the attacker is on-path:
+
+1. Click a forwarded reply, expand the **IP header** in the details pane, and show **TTL = 63** — decremented once by the attacker. This is the clearest single-screenshot proof of on-path forwarding.
+2. **Statistics → Conversations → IPv4 tab** shows the victim1↔victim2 flow with per-condition byte and packet counts, which feeds directly into the results tables in section 15.
+
+If you want live capture instead of a saved file, run Wireshark with the namespace interface as in Method 2. For reliability in a lab report, saved `.pcap` files are easier to repeat and easier to submit as evidence.
 
 ## 8. Why Your Original Setup Did Not Capture Traffic
 
@@ -340,7 +350,55 @@ sudo ip netns exec attacker tc qdisc add dev att-v2 root netem loss 20%
 sudo ip netns exec attacker tc qdisc add dev att-v2 root netem delay 50ms 20ms distribution normal
 ```
 
-### 10.4 Remove shaping
+### 10.4 Corruption
+
+```bash
+
+sudo ip netns exec attacker tc qdisc add dev att-v2 root netem corrupt 50%
+
+```
+### 10.5 Duplication
+
+```bash
+
+sudo ip netns exec attacker tc qdisc add dev att-v2 root netem duplicate 20%
+
+```
+### 10.6 Reordering
+Real wireless/multipath links sometimes deliver packets in the wrong order. This delays a fraction while letting others pass, so they arrive reordered:
+
+```bash
+
+sudo ip netns exec attacker tc qdisc add dev att-v2 root netem delay 50ms reorder 25% 50%
+
+```
+### 10.7 Rate limiting
+Directly matches the "Bandwidth: 10/50/100 Mbps" row in your §13 parameter matrix:
+
+```bash
+
+sudo ip netns exec attacker tc qdisc add dev att-v2 root netem rate 1mbit
+
+```
+### 10.8 Correlated loss
+Plain loss 20% drops packets independently. Real wireless loss comes in bursts. The second number correlates each drop with the previous one, which is more realistic:
+
+```bash
+
+sudo ip netns exec attacker tc qdisc add dev att-v2 root netem loss 20% 50%
+
+```
+### 10.9 Combining effects in one command
+To model a genuinely weak wireless link, stack several in a single netem line (you can't run multiple adds — that's the "Exclusivity flag" error you just hit):
+
+```bash
+
+sudo ip netns exec attacker tc qdisc add dev att-v2 root netem delay 80ms 20ms loss 5% corrupt 1% duplicate 1%
+
+```
+
+### 10.10 Remove shaping
+After each applied effect remove it to add another effect:
 
 ```bash
 sudo ip netns exec attacker tc qdisc del dev att-v2 root
@@ -367,6 +425,29 @@ Measure:
 - packet loss percentage
 - jitter
 - packet capture evidence
+
+### Attacker with application load increase:
+
+# light load — 1 stream (this is your normal baseline)
+```bash
+sudo ip netns exec victim1 iperf3 -c 10.0.2.20 -t 10 --repeating-payload
+```
+# heavy load — 10 streams
+```bash
+sudo ip netns exec victim1 iperf3 -c 10.0.2.20 -t 10 -P 10 --repeating-payload
+```
+
+### Different protocol choice — TCP vs UDP under the same condition:
+
+# TCP
+```bash
+sudo ip netns exec victim1 iperf3 -c 10.0.2.20 -t 10 --repeating-payload
+```
+# UDP (also gives you jitter + loss directly)
+```bash
+sudo ip netns exec victim1 iperf3 -c 10.0.2.20 -u -b 100M -t 10 --repeating-payload
+```
+
 
 ## 12. Defense Mechanisms
 
@@ -420,130 +501,28 @@ Use this as your experiment table.
 | Packet loss rate         | 0%, 1%, 5%, 20%                                                     |
 | Authentication matrix    | none, static ARP, TLS, pinned TLS, mutual TLS                       |
 
-## 14. NS-3 Simulation Version
 
-Use NS-3 for the reproducible, measurable simulation chapter in the paper.
-
-### 14.1 Suggested model
-
-- victim1, attacker, victim2 nodes
-- point-to-point or Wi-Fi style links
-- FlowMonitor for throughput and delay
-- PacketSink and OnOffApplication or BulkSendApplication
-- RateErrorModel for loss
-- netem-style delay in the model or channel delay settings
-
-### 14.2 Metrics
-
-- throughput
-- delay
-- jitter
-- loss
-- flow-level packet counts
-- capture coverage at the attacker node
-
-### 14.3 Reportable comparison
-
-- wired-like vs wireless-like
-- TCP vs UDP
-- baseline vs attack
-- attack vs defense
-
-## 15. What To Record
-
-### Tables
-
-- latency table
-- throughput table
-- loss table
-- authentication comparison table
-- protocol comparison table
-
-### Screenshots
-
-- namespace creation
-- bridge and route output
-- ping output
-- iperf3 output
-- tcpdump output
-- `ip neigh` output
-- Wireshark capture
-
-### Files
-
-- command transcript
-- results CSV
-- pcap files
-- graphs in PNG or PDF
-- final report DOCX
-
-## 16. Suggested Report Structure
-
-1. Title page
-2. Abstract
-3. Introduction
-4. Background and related work
-5. Threat model and ethics
-6. Methodology
-7. Experimental setup
-8. Results
-9. Discussion and defenses
-10. Conclusion
-11. References
-12. Appendix with commands and screenshots
-
-## 17. Deliverables You Need To Submit
+## 14. Deliverables You Need To Submit
 
 - Word file of the research paper
 - similarity report from the library or approved tool
 - AI-generated-content report from the library or approved tool
 - implementation link or repository link
 
-## 18. Viva Answering Points
-
-Use these short answers in the viva.
-
-Q: What did you implement?
-
-A: A wireless-like isolated LAN using Linux namespaces, veth links, bridge-based medium simulation, traffic shaping, and an on-path attacker gateway.
-
-Q: Did you do real hacking?
-
-A: No. The system is isolated and used only for controlled simulation and measurement.
-
-Q: Why can the attacker capture traffic now?
-
-A: Because the attacker is placed in the forwarding path between the two victim subnets, not just attached as a passive bridge member.
-
-Q: What is the main contribution?
-
-A: A measurable MITM-style lab that compares baseline and attacked conditions, plus defenses and protocol effects.
-
-## 19. Common Fixes
+## 15. Common Fixes
 
 If the attacker still sees no packets:
 
-- verify `ip_forward=1`
+- verify `ip_forward=1` **inside the attacker namespace**: `sudo ip netns exec attacker sysctl net.ipv4.ip_forward` (a host-level setting does not count)
+- verify victim1 routes through the attacker: `sudo ip netns exec victim1 ip route get 10.0.2.20` should show `via 10.0.1.50`
 - verify the routes point through the attacker
 - verify Victim1 and Victim2 are in different subnets
 - verify `tcpdump` is running on the attacker namespace, not the host namespace
+- verify the capture and the traffic generator are running at the same time in two separate terminals (tcpdump only sees live traffic)
+- verify you are capturing on a single interface (`-i att-v1`) for readable output
 - verify the correct interface name in each namespace
 - verify the bridge is not acting as the only forwarding path
 - verify no NAT or external route is bypassing the lab path
 
 If you want the bridge-only model to observe all traffic, use explicit mirroring or a simulator. A plain bridge does not make a third host see unicast by default.
 
-## 20. Final Recommendation
-
-For your final submission, use two parts:
-
-- Linux namespaces project for the live lab demonstration
-- NS-3 project for the simulation, parameter sweep, and plots
-
-That combination gives you:
-
-- a working attacker capture demo
-- a clear wireless-like behavior model
-- measurable effects for the paper
-- strong viva answers
-- defensible, safe, isolated-lab methodology

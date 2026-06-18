@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# teardown.sh — remove the lab. Deleting a namespace also removes its veths.
+# teardown.sh - remove the lab. Deleting a namespace also removes its veths.
 # Run as root:  sudo ./teardown.sh
 set -uo pipefail
 

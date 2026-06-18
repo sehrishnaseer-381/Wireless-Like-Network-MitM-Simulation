@@ -1,0 +1,8 @@
+condition,rtt_min_ms,rtt_avg_ms,rtt_max_ms,rtt_mdev_ms,throughput_mbps,packet_loss_pct,jitter_ms,pcap_file,notes
+baseline,,,,,,,,baseline-ping.pcap,control - no shaping
+attacker-no-shaping,,,,,,,,,attacker on-path but no netem
+delay-100ms,,,,,,,,delay-100ms.pcap,netem delay 100ms on att-v2
+loss-20pct,,,,,,,,loss-20pct.pcap,netem loss 20% on att-v2
+jitter-50ms,,,,,,,,jitter-50ms.pcap,netem delay 50ms 20ms normal
+defense-static-arp,,,,,,,,,gateway MAC pinned on victim1
+defense-firewall,,,,,,,,defense-firewall.pcap,FORWARD DROP, ICMP allowed

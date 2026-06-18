@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# setup.sh — build the isolated MitM lab:  victim1 <-> attacker <-> victim2
+# setup.sh - build the isolated MitM lab:  victim1 <-> attacker <-> victim2
+# Sections 5, 6, 7.1 of the workflow doc, in one script.
 # Run as root:  sudo ./setup.sh
 #
-# Topology (routed chain, attacker is on-path between two subnets):
+# Topology (routed chain, attacker on-path between two subnets):
 #   victim1 (10.0.1.10) --veth-- attacker (10.0.1.50 / 10.0.2.50) --veth-- victim2 (10.0.2.20)
 set -euo pipefail
 
@@ -49,7 +50,7 @@ ip netns exec attacker ip link set att-v2 up
 ip netns exec attacker ip link set lo up
 
 # IMPORTANT: ip_forward is per-namespace. It MUST be set inside the attacker
-# namespace, not on the host. Setting it on the host has no effect here.
+# namespace, not on the host. A host-level sysctl does nothing here.
 echo "[*] Enabling forwarding inside the attacker namespace..."
 ip netns exec attacker sysctl -w net.ipv4.ip_forward=1
 
